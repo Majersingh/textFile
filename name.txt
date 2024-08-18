@@ -1,3 +1,163 @@
-hi first file added 
-thankyou for accepting mynpr
-now for pr
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fetch Interval Example</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top: 4px solid #3498db;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+
+
+  <!-- Modal for displaying preview-->
+    <div id="previewModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center">
+        <div class="bg-white rounded-lg shadow-lg w-10/12 max-h-3/4 p-6 flex flex-col items-center">
+            <div class="flex flex-col items-center mb-4">
+                <div class="spinner mb-2"></div>
+                <span class="text-lg font-medium">Checking Existing Status...</span>
+            </div>
+        </div>
+    </div>
+
+    <div id='startModal' class="bg-white p-8 rounded shadow-md w-96 shadow-inner rounded-lg hidden">
+        <h1 class="text-2xl font-bold mb-4 text-center">Execute Script</h1>
+        
+        <label for="intervalInput" class="block text-lg font-medium text-gray-700">Enter interval in minutes:</label>
+        <input type="number" id="intervalInput" class="mt-1 mb-4 p-2 border border-gray-300 rounded w-full" placeholder="e.g., 5">
+        
+        <div class="flex justify-between ">
+            <button id="startBtn" class="w-full bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-700">Start</button>
+        </div>
+        
+        <div id="statusMessage" class="mt-4 text-center text-lg"></div>
+    </div>
+
+    <!-- Modal for displaying the fetch status -->
+    <div id="responseModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center hidden">
+        <div class="bg-white rounded-lg shadow-lg w-10/12 max-h-3/4 p-6 flex flex-col items-center">
+            <div class="flex flex-col items-center mb-4">
+                <div class="spinner mb-2"></div>
+                <span id='crntStatus' class="text-lg font-medium"></span>
+            </div>
+            <button id="stopBtn" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-700">Stop</button>
+        </div>
+    </div>
+
+    <script>
+       
+        let intervalId;
+        let isRunning;
+        let isToDoStop=false;
+
+        google.script.run.withSuccessHandler((res)=>{
+          isRunning=res.isRunning;
+          document.getElementById('previewModal').classList.add('hidden');
+          console.log('Script State is', res , typeof res)
+          if(isRunning) 
+             showModal(`Script running in every ${res.interval} minute(s)`)
+          else
+             document.getElementById('startModal').classList.remove('hidden');
+        }).getStatusofScript();
+       
+        function updateStatus(message , color) {
+            const statusMessage = document.getElementById('statusMessage');
+            statusMessage.innerText = message;
+            statusMessage.style.color=color;
+        }
+
+        document.getElementById('startBtn').addEventListener('click', async () => {
+            const minutes = document.getElementById('intervalInput').value;
+            let interval=minutes * 60 * 1000; // Convert minutes to milliseconds
+            console.log(`Request to execute script in every ${minutes} minute(s).`);
+            if (minutes > 0 && !isRunning) {
+                showModal("Starting Script...");
+                startScriptexe(minutes)//start first instantly
+                intervalId = setInterval(() => {
+                                  if(!isToDoStop)
+                                  startScriptexe(minutes)
+                              }, interval);
+          }
+          else {
+                if(!minutes|| minutes<=0)
+                updateStatus('Please enter a valid number of minutes', 'red');
+                else if(isRunning)
+                updateStatus("Script is Already running",'green')
+          }
+        });
+
+        document.getElementById('stopBtn').addEventListener('click',()=>{
+          isToDoStop =true;
+          showModal("Stopping Script Execution...")
+          stopScriptexe();
+          
+        });
+
+
+        function startScriptexe (minutes){
+          fetch('https://jrqb4hh7zqcaptiw7luqf6e7ma0qserf.lambda-url.ap-south-1.on.aws/', {
+              method: 'GET',
+              headers: {
+                  'Content-Type': 'application/json',
+              }
+          })
+          .then(response => response.json())
+          .then(async (data) => {
+              if(isToDoStop)
+              {
+                console.log("Skipped as stopped req is there")
+                return;
+              }
+              showModal(`Script running in every ${minutes} minute(s)`)
+              console.log('Successfully invoked:', data);
+              await google.script.run.withSuccessHandler(
+                (res)=> {
+                isRunning= res; 
+                console.log("Response from Set Status",res)
+              })
+              .setStatusofScript(true , minutes);
+          })
+          .catch(error => {
+              console.error('Error:', error);
+              document.getElementById('responseModal').classList.add('hidden')
+              updateStatus("Failed to Invoke Lamda", 'red')
+              clearInterval(intervalId);
+          });
+        }
+
+       function stopScriptexe(){
+            clearInterval(intervalId);
+            google.script.run.withSuccessHandler((res)=>{
+               isToDoStop=false;
+               isRunning=false
+               updateStatus('Script execution stopped','black');
+              console.log('Script execution stopped.');
+               console.log("Response from Set Status",res)
+               document.getElementById('responseModal').classList.add('hidden');
+              document.getElementById('startModal').classList.remove('hidden');
+            })
+            .setStatusofScript(false ,0);
+        }
+
+        function showModal(status) {
+            const modal = document.getElementById('responseModal');
+            document.getElementById('crntStatus').innerText=status;
+            modal.classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>
