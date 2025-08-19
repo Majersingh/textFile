@@ -1,1 +1,4 @@
+# This file contains sample data for the project.
+
+# Example data:
 dump
