@@ -372,15 +372,15 @@ async def slack_events(
     
     body = await request.body()
     
-    # Verify signature
-    if Config.SLACK_SIGNING_SECRET and x_slack_signature:
-        if not verify_slack_signature(
-            Config.SLACK_SIGNING_SECRET,
-            x_slack_request_timestamp,
-            body,
-            x_slack_signature
-        ):
-            raise HTTPException(status_code=401, detail="Invalid signature")
+    # # Verify signature
+    # if Config.SLACK_SIGNING_SECRET and x_slack_signature:
+    #     if not verify_slack_signature(
+    #         Config.SLACK_SIGNING_SECRET,
+    #         x_slack_request_timestamp,
+    #         body,
+    #         x_slack_signature
+    #     ):
+    #         raise HTTPException(status_code=401, detail="Invalid signature")
     
     payload = await request.json()
     
