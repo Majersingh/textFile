@@ -291,6 +291,7 @@ Generate a response that:
 4. Is helpful and continues the conversation naturally
 5. Keep it concise (1-3 sentences unless the topic requires more)
 
+
 Your response:"""
     )
     
@@ -362,53 +363,62 @@ async def root():
 
 
 @app.post("/slack/events")
-async def slack_events(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    x_slack_request_timestamp: str = Header(None),
-    x_slack_signature: str = Header(None)
-):
-    """Handle Slack events"""
+async def slack_events(request: Request, background_tasks: BackgroundTasks):
+    """Handle Slack events - DMs and mentions"""
     
-    body = await request.body()
-    
-    # # Verify signature
-    # if Config.SLACK_SIGNING_SECRET and x_slack_signature:
-    #     if not verify_slack_signature(
-    #         Config.SLACK_SIGNING_SECRET,
-    #         x_slack_request_timestamp,
-    #         body,
-    #         x_slack_signature
-    #     ):
-    #         raise HTTPException(status_code=401, detail="Invalid signature")
-    
-    payload = await request.json()
-    
-    # Handle URL verification
-    if payload.get("type") == "url_verification":
-        print("✅ URL verification challenge received")
-        return JSONResponse(content={"challenge": payload.get("challenge")})
-    
-    # Handle events
-    if payload.get("type") == "event_callback":
-        event = payload.get("event", {})
-        event_id = payload.get("event_id")
+    try:
+        payload = await request.json()
+        event_type = payload.get("type")
         
-        # Prevent duplicates
-        if event_id in processed_events:
-            return JSONResponse(content={"status": "ok"})
+        print(f"📨 Event type: {event_type}")
         
-        processed_events.add(event_id)
-        if len(processed_events) > 1000:
-            processed_events.clear()
+        # Handle URL verification
+        if event_type == "url_verification":
+            challenge = payload.get("challenge")
+            print(f"✅ Returning challenge: {challenge}")
+            return {"challenge": challenge}
         
-        # Process message events in background (respond quickly to Slack)
-        if event.get("type") == "message":
-            background_tasks.add_task(handle_dm_message, event)
+        # Handle message events
+        if event_type == "event_callback":
+            event = payload.get("event", {})
+            event_id = payload.get("event_id")
+            
+            # Skip duplicates
+            if event_id in processed_events:
+                print(f"⚠️ Duplicate event: {event_id}")
+                return {"status": "ok"}
+            
+            processed_events.add(event_id)
+            if len(processed_events) > 1000:
+                processed_events.clear()
+            
+            message_type = event.get("type")
+            print(f"🔔 Message type: {message_type}")
+            
+            # Handle DMs
+            if message_type == "message" and event.get("channel_type") == "im":
+                print("💬 Processing DM...")
+                background_tasks.add_task(handle_dm_message, event)
+            
+            # Handle channel messages where you're mentioned
+            elif message_type == "message" and event.get("channel_type") in ["channel", "group"]:
+                # Check if you're mentioned in the message
+                text = event.get("text", "")
+                if f"<@{Config.MY_USER_ID}>" in text:
+                    print("📣 Processing mention...")
+                    background_tasks.add_task(handle_mention, event)
+                else:
+                    print(f"⚠️ Channel message but not mentioned")
+            
+            return {"status": "ok"}
         
-        return JSONResponse(content={"status": "ok"})
-    
-    return JSONResponse(content={"status": "ok"})
+        return {"status": "ok"}
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
 
 
 # ============================================================================
@@ -480,6 +490,93 @@ async def handle_dm_message(event: Dict[str, Any]):
     except Exception as e:
         print(f"❌ Error handling message: {e}")
 
+async def handle_mention(event: Dict[str, Any]):
+    """
+    Handle when someone mentions you (@your_name) in a channel
+    Reply in the thread
+    """
+    
+    channel = event.get("channel")
+    user = event.get("user")
+    text = event.get("text", "")
+    ts = event.get("ts")
+    thread_ts = event.get("thread_ts")  # If already in a thread
+    
+    # Skip if message is from you
+    if user == Config.MY_USER_ID:
+        print("⚠️ Skipping mention: From yourself")
+        return
+    
+    # Skip bot messages
+    if event.get("bot_id") or event.get("subtype") in ["message_changed", "message_deleted"]:
+        print("⚠️ Skipping mention: Bot or edit")
+        return
+    
+    # Check if you're actually mentioned
+    if f"<@{Config.MY_USER_ID}>" not in text:
+        print("⚠️ Not actually mentioned")
+        return
+    
+    print(f"📣 Mentioned by {user} in channel {channel}: {text}")
+    
+    try:
+        # Get sender info
+        user_info = await slack_client.get_user_info(user)
+        sender_name = user_info.get("user", {}).get("real_name", "User")
+        
+        # Remove the mention from text to get clean message
+        clean_text = text.replace(f"<@{Config.MY_USER_ID}>", "").strip()
+        
+        # Get thread context if in a thread
+        context_messages = []
+        if thread_ts:
+            # Get thread replies for context
+            history = await slack_client.get_conversation_history(
+                channel=channel,
+                limit=10,
+                oldest=thread_ts
+            )
+            context_messages = [
+                msg.get("text", "") for msg in history.get("messages", [])
+                if msg.get("text")
+            ]
+        else:
+            # Get recent channel messages for context
+            history = await slack_client.get_conversation_history(channel, limit=5)
+            context_messages = [
+                msg.get("text", "") for msg in history.get("messages", [])[::-1]
+                if msg.get("text")
+            ]
+        
+        # Analyze your style if not done yet
+        if not style_analyzer.style_profile:
+            await style_analyzer.analyze_my_style(channel, Config.MY_USER_ID)
+        
+        # Generate response
+        response = await generate_response_in_my_style(
+            incoming_message=clean_text or "What's up?",
+            sender_name=sender_name,
+            channel=channel,
+            my_user_id=Config.MY_USER_ID,
+            conversation_context=context_messages
+        )
+        
+        # Reply in thread (use thread_ts if exists, otherwise use message ts)
+        result = await slack_client.post_message_as_user(
+            channel=channel,
+            text=response,
+            thread_ts=thread_ts or ts  # Reply in thread
+        )
+        
+        if result.get("ok"):
+            print(f"✅ Replied to mention in thread: {response[:80]}...")
+        else:
+            print(f"❌ Failed to send: {result.get('error')}")
+            
+    except Exception as e:
+        print(f"❌ Error handling mention: {e}")
+        import traceback
+        traceback.print_exc()
 
 # ============================================================================
 # MANUAL TRIGGERS (Optional API endpoints)
