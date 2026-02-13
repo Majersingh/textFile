@@ -1,0 +1,46 @@
+# FastAPI and Server
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# HTTP Client
+httpx>=0.26.0
+
+# Environment Variables
+python-dotenv>=1.0.0
+
+# Data Validation
+pydantic>=2.5.0
+
+# LangChain for AI
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langchain-core>=0.1.0
+langchain-community>=0.0.20
+
+# OpenAI
+openai>=1.10.0
+
+# Optional: If you want to use the quiz app features too
+# PDF Processing (for quiz app)
+pypdf>=3.17.0
+
+# YouTube Transcript (for quiz app)
+youtube-transcript-api>=0.6.0
+
+# Vector Store (for PDF Q&A app)
+faiss-cpu>=1.7.4
+
+# Text Splitting (for PDF Q&A app)
+langchain-text-splitters>=0.0.1
+
+# Memory (for PDF Q&A app)
+langchain-classic>=0.0.1
+
+# Tools (for PDF Q&A app with ReAct)
+duckduckgo-search>=4.0.0
+
+# Graph Orchestration (for PDF Q&A app)
+langgraph>=0.0.40
+
+# Streamlit (for quiz/PDF Q&A apps)
+streamlit>=1.30.0
