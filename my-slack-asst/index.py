@@ -146,7 +146,32 @@ class SlackUserClient:
         async with httpx.AsyncClient() as client:
             response = await client.get(url, headers=headers, params=params)
             return response.json()
-
+    
+    async def get_thread_replies(
+        self,
+        channel: str,
+        thread_ts: str,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Get all replies in a thread
+        """
+        url = f"{self.base_url}/conversations.replies"
+        
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json"
+        }
+        
+        params = {
+            "channel": channel,
+            "ts": thread_ts,
+            "limit": limit
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, params=params)
+            return response.json()
 
 # Initialize Slack client
 slack_client = SlackUserClient(Config.SLACK_USER_TOKEN)
@@ -313,6 +338,71 @@ Your response:"""
         print(f"❌ Response generation failed: {e}")
         return "Thanks for the message! I'll get back to you soon."
 
+async def generate_response_with_thread_context(
+    incoming_message: str,
+    sender_name: str,
+    channel: str,
+    my_user_id: str,
+    thread_context: str,
+    all_messages: List[str]
+) -> str:
+    """
+    Generate a response considering the ENTIRE thread conversation
+    """
+    
+    style_profile = style_analyzer.get_style_profile()
+    
+    # Build example messages from your history
+    examples_text = ""
+    if style_analyzer.my_messages_cache:
+        examples = list(style_analyzer.my_messages_cache)[:5]
+        examples_text = "\n".join([f"Example {i+1}: {msg}" for i, msg in enumerate(examples)])
+    
+    # Enhanced prompt with full thread awareness
+    response_prompt = ChatPromptTemplate.from_template(
+        """You are replying to a Slack thread on behalf of a user. You have the FULL thread context.
+
+YOUR COMMUNICATION STYLE:
+{style_profile}
+
+EXAMPLES OF HOW YOU WRITE:
+{examples}
+
+COMPLETE THREAD CONVERSATION (in chronological order):
+{thread_context}
+
+CURRENT MESSAGE FROM {sender} (that mentions you):
+"{message}"
+
+Generate a response that:
+1. Matches your writing style exactly
+2. Shows you've READ and UNDERSTOOD the entire thread context
+3. Responds appropriately to the current message while considering all previous messages
+4. References earlier points in the thread if relevant
+5. Is natural and conversational
+6. Keep it concise but contextually complete (2-4 sentences unless more needed)
+
+Your response:"""
+    )
+    
+    chain = response_prompt | llm | StrOutputParser()
+    
+    try:
+        response = await chain.ainvoke({
+            "style_profile": style_profile,
+            "examples": examples_text or "No examples available yet",
+            "thread_context": thread_context or "No prior context",
+            "sender": sender_name,
+            "message": incoming_message
+        })
+        
+        print(f"✅ Generated context-aware response: {response[:100]}...")
+        return response.strip()
+        
+    except Exception as e:
+        print(f"❌ Response generation failed: {e}")
+        return "Thanks for tagging me! I'll look into this."
+
 
 # ============================================================================
 # FASTAPI APP
@@ -370,13 +460,9 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
         payload = await request.json()
         event_type = payload.get("type")
         
-        print(f"📨 Event type: {event_type}")
-        
         # Handle URL verification
         if event_type == "url_verification":
-            challenge = payload.get("challenge")
-            print(f"✅ Returning challenge: {challenge}")
-            return {"challenge": challenge}
+            return {"challenge": payload.get("challenge")}
         
         # Handle message events
         if event_type == "event_callback":
@@ -385,7 +471,6 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
             
             # Skip duplicates
             if event_id in processed_events:
-                print(f"⚠️ Duplicate event: {event_id}")
                 return {"status": "ok"}
             
             processed_events.add(event_id)
@@ -393,22 +478,17 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
                 processed_events.clear()
             
             message_type = event.get("type")
-            print(f"🔔 Message type: {message_type}")
             
             # Handle DMs
             if message_type == "message" and event.get("channel_type") == "im":
-                print("💬 Processing DM...")
                 background_tasks.add_task(handle_dm_message, event)
             
-            # Handle channel messages where you're mentioned
+            # Handle mentions in channels (including threads)
             elif message_type == "message" and event.get("channel_type") in ["channel", "group"]:
-                # Check if you're mentioned in the message
                 text = event.get("text", "")
                 if f"<@{Config.MY_USER_ID}>" in text:
-                    print("📣 Processing mention...")
+                    print(f"📣 Mention detected in {'thread' if event.get('thread_ts') else 'channel'}")
                     background_tasks.add_task(handle_mention, event)
-                else:
-                    print(f"⚠️ Channel message but not mentioned")
             
             return {"status": "ok"}
         
@@ -493,7 +573,7 @@ async def handle_dm_message(event: Dict[str, Any]):
 async def handle_mention(event: Dict[str, Any]):
     """
     Handle when someone mentions you (@your_name) in a channel
-    Reply in the thread
+    Reply in the thread with full thread context
     """
     
     channel = event.get("channel")
@@ -527,45 +607,82 @@ async def handle_mention(event: Dict[str, Any]):
         # Remove the mention from text to get clean message
         clean_text = text.replace(f"<@{Config.MY_USER_ID}>", "").strip()
         
-        # Get thread context if in a thread
+        # Get FULL thread context
         context_messages = []
-        if thread_ts:
-            # Get thread replies for context
-            history = await slack_client.get_conversation_history(
-                channel=channel,
-                limit=10,
-                oldest=thread_ts
-            )
-            context_messages = [
-                msg.get("text", "") for msg in history.get("messages", [])
-                if msg.get("text")
-            ]
+        thread_summary = ""
+        
+        # Determine if this is a thread reply or a new thread
+        parent_ts = thread_ts or ts  # Use thread_ts if in thread, else this message starts thread
+        
+        print(f"🔍 Getting full thread context (parent_ts: {parent_ts})...")
+        
+        # Get ALL thread replies using conversations.replies API
+        thread_history = await slack_client.get_thread_replies(
+            channel=channel,
+            thread_ts=parent_ts
+        )
+        
+        if thread_history.get("ok"):
+            messages = thread_history.get("messages", [])
+            print(f"✅ Found {len(messages)} messages in thread")
+            
+            # Build context from ALL messages in the thread
+            for msg in messages:
+                msg_user = msg.get("user", "Unknown")
+                msg_text = msg.get("text", "")
+                msg_ts = msg.get("ts", "")
+                
+                # Get user name for each message
+                if msg_user and msg_user != "Unknown":
+                    try:
+                        msg_user_info = await slack_client.get_user_info(msg_user)
+                        msg_user_name = msg_user_info.get("user", {}).get("real_name", msg_user)
+                    except:
+                        msg_user_name = msg_user
+                else:
+                    msg_user_name = "Unknown"
+                
+                # Mark if this is the current message (where you were mentioned)
+                is_current = (msg_ts == ts)
+                marker = " [← YOU WERE MENTIONED HERE]" if is_current else ""
+                
+                # Add to context
+                if msg_text:
+                    context_messages.append(f"{msg_user_name}: {msg_text}{marker}")
+            
+            # Create thread summary
+            thread_summary = "\n".join(context_messages)
+            print(f"📝 Thread context:\n{thread_summary[:500]}...")
+            
         else:
-            # Get recent channel messages for context
-            history = await slack_client.get_conversation_history(channel, limit=5)
+            # Fallback: get recent channel messages if thread fetch fails
+            print(f"⚠️ Could not get thread replies, using channel history")
+            history = await slack_client.get_conversation_history(channel, limit=10)
             context_messages = [
                 msg.get("text", "") for msg in history.get("messages", [])[::-1]
                 if msg.get("text")
             ]
+            thread_summary = "\n".join(context_messages)
         
         # Analyze your style if not done yet
         if not style_analyzer.style_profile:
             await style_analyzer.analyze_my_style(channel, Config.MY_USER_ID)
         
-        # Generate response
-        response = await generate_response_in_my_style(
+        # Generate response with FULL thread context
+        response = await generate_response_with_thread_context(
             incoming_message=clean_text or "What's up?",
             sender_name=sender_name,
             channel=channel,
             my_user_id=Config.MY_USER_ID,
-            conversation_context=context_messages
+            thread_context=thread_summary,
+            all_messages=context_messages
         )
         
         # Reply in thread (use thread_ts if exists, otherwise use message ts)
         result = await slack_client.post_message_as_user(
             channel=channel,
             text=response,
-            thread_ts=thread_ts or ts  # Reply in thread
+            thread_ts=parent_ts  # Always reply in the thread
         )
         
         if result.get("ok"):
