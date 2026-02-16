@@ -319,6 +319,7 @@ Generate a response that:
 
 Your response:"""
     )
+    print(f'Here is recent convo {context_text}')
     
     chain = response_prompt | llm | StrOutputParser()
     
