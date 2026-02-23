@@ -426,8 +426,7 @@ if st.button("Ask") and question:
 # Show chat history in UI
 st.subheader("💬 Chat History")
 print("✅ Rendering chat history")
-for q, a in st.session_state.history:
-    print(f"🔹 History item - Q: {q}, A: {a}")
+for q, a in st.session_state.history[::-1]:
     st.markdown(f"**You:** {q}")
     st.markdown(f"**AI:** {a}")
     st.markdown("---")
