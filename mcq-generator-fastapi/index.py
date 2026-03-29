@@ -36,7 +36,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 
 class Config:
     MIN_QUESTIONS = 10
-    MAX_QUESTIONS = 25
+    MAX_QUESTIONS = 50
     DEFAULT_QUESTIONS = 10
     MODEL_NAME = "gpt-4o-mini"
     TEMPERATURE = 0.7
