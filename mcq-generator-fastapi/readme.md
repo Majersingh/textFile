@@ -22,7 +22,7 @@ pip install -r requirements.txt
 export OPENAI_API_KEY="sk-..."
 
 # 3. Start the server
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn index:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Interactive docs available at:
